@@ -1,0 +1,586 @@
+---
+title: "A descriptive Bayesian account of optimism in belief revision"
+bibliography: references.bib
+csl: apa7.csl
+document-params: "10pt, letterpaper"
+
+author-information: > 
+    \author{{\large \bf Derek Powell (dmpowell@asu.edu)} \\ School of Social and Behavioral Sciences \\ Arizona State University}
+
+abstract: >
+    A number of findings suggest that people’s expectations about the future are unrealistically optimistic [e.g. @sharot.etal2011]. This bias is thought to result from the "motivational modulation" of evidence, driven by the desire to feel positively about one’s own future [@sharot2011]. However, evaluating "bias" in belief revision requires careful comparison against a rational standard, and recent arguments and findings [@shah.etal2016] give reason to doubt much of the evidence for optimism bias. Descriptive Bayesian models allow for a direct comparison of human belief updating against the Bayesian rational standard [@tauber.etal2017]. Here, these analyses indicate widespread "conservatism", or weaker-than-rational belief revision. However, in contrast to the widely-reported "optimism bias," participants more commonly displayed pessimism than optimism in their belief revision. Both effects were marked by significant heterogeneity, with a sizable fraction of participants engaging in largely rational updating.
+    
+keywords: >
+    Cognitive Psychology; Belief updating; Motivated reasoning; Bayesian computational models
+    
+output: cogsci2016::cogsci_paper
+final-submission: \cogscifinalcopy
+
+# header-includes:
+#   - \usepackage{float}
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=3, fig.height=3, fig.crop = F, 
+                      fig.pos = "h", fig.path='figs/',
+                      echo=F, warning=F, cache=F, 
+                      message=F, sanitize = T)
+```
+
+```{r setup, include=F}
+library(tidyverse)
+library(brms)
+library(tidybayes)
+library(patchwork)
+
+df_all <- read_csv("../data/life-events-large-2021-12-14.csv") %>% 
+  filter(DistributionChannel=="anonymous") %>% 
+  rename(Duration = `Duration (in seconds)`) %>% 
+  mutate(subj_id = 1:n())
+  
+df_passing <- df_all %>% 
+  filter(Progress==100, check_77==77) %>% 
+  select(subj_id, contains("_B"), contains("_P"), contains("_S"), contains("lotr"), age, gender, marital)
+
+items <- read_tsv("be a victim of a car break-in	76
+die before the age of 80	41
+suffer heart failure	31
+die before the age of 70	18
+suffer a stroke	17
+be physically assaulted by a stranger	26
+be diagnosed with any kind of cancer	40
+become divorced	45
+have cataracts	65
+be diagnosed with skin cancer	3
+become a homeowner	82
+live past 90 years old	11
+maintain a healthy weight	58
+have an achievement recognized by the press	3
+have the financial security to retire comfortably at 65	22
+live past 100 years old	1
+be in a marriage that lasts at least 10 years	61
+be earning more than $75,000/yr within 5 years	16
+be earning more than $100,000/yr within 5 years	9
+make it through all of next year without catching a cold	23",
+col_names = c("item_text", "item_prob")) %>% 
+  mutate(item_num = as.character(1:20))
+
+df <- df_passing %>% 
+  mutate_at(vars(contains("lotr_")), ~recode(.x,
+                            "Strongly agree" = 4,
+                            "Somewhat agree" = 3,
+                            "Neutral" = 2,
+                            "Somewhat disagree" = 1,
+                            "Strongly disagree" = 0)) %>% 
+  mutate(
+    lotr = lotr_1 + (4-lotr_3) + lotr_4 + lotr_6 + (4-lotr_7) + lotr_8 + (4-lotr_9) + lotr_10
+    ) %>% 
+  select(-contains("lotr_")) %>% 
+  # gather(lotr_item, lotr_resp, contains("lotr_")) %>% 
+  
+  # mutate(lotr_resp = recode(lotr_resp,
+  #                           "Strongly agree" = 4,
+  #                           "Somewhat agree" = 3,
+  #                           "Neutral" = 2,
+  #                           "Somewhat disagree" = 1,
+  #                           "Strongly disagree" = 0),
+  #        lotr_item = as.numeric(gsub("lotr_", "", lotr_item))
+  #        ) %>% 
+  # filter(lotr_item %in% c(1, 3, 4, 7, 9,10)) %>% 
+  # mutate(lotr_resp = if_else(lotr_item %in% c(3, 7, 9), (4-lotr_resp), lotr_resp)) %>% 
+  # group_by(subj_id) %>% 
+  # summarize(lotr = mean(lotr_resp, na.rm=TRUE)) %>% 
+  gather(trial, response, contains("_B"), contains("_P"), contains("_S")) %>% 
+  mutate(
+    trial_type = case_when(
+      grepl("_B1", trial) ~ "baserate",
+      grepl("_P1", trial) ~ "pre",
+      grepl("_S2", trial) ~ "post"
+    )
+  ) %>% 
+  mutate(item_num = str_match(trial, "([0-9]*)_")[,2]) %>% 
+  left_join(items, by = "item_num") %>% 
+    mutate(response = response/100, item_prob = item_prob/100) %>% 
+  mutate(response = case_when(
+    response == 0 ~ .005, # maybe .001? .0025?
+    response == 1 ~ .995,
+    TRUE ~ response
+  )) %>% 
+  select(-trial) %>%
+  spread(trial_type, response) %>% 
+  group_by(subj_id) %>%
+  mutate(
+    logit_base = qlogis(baserate),
+    logit_pre = qlogis(pre),
+    logit_truebase = qlogis(item_prob),
+    logit_post = qlogis(post),
+    update = post - pre
+  )
+
+df_reg <- df %>% 
+  mutate(
+    item_num = as.numeric(item_num),
+    pos_item = if_else(item_num > 10, 1, 0),
+    good_news = case_when(
+      pos_item==1 & item_prob > baserate ~ 1,
+      pos_item==0 & item_prob < baserate ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+N_female_Ps <- sum(df_passing$gender=="Woman")
+median_age <- median(df_passing$age, na.rm = TRUE)
+```
+
+
+```{r fit_models, include=F}
+fit0 <- brm(
+  bf(
+    post ~ 0 + logit_scaled(item_prob) + logit_scaled(pre) + logit_scaled(baserate) 
+    # b0~1, 
+    # nl=TRUE
+    ),
+  prior = prior(constant(1), class="b", coef = "logit_scaleditem_prob") + 
+    prior(constant(1), class="b", coef = "logit_scaledpre") +
+    prior(constant(-1), class="b", coef = "logit_scaledbaserate") ,
+  data = df,
+  family = Beta("logit"),
+  save_pars = save_pars(all = TRUE),
+  chains = 4,
+  cores = 4,
+  file = "../local/fit0"
+)
+
+fit_dbayes_mlm <- brm(
+  bf(
+    post ~ b0*(logit_truebase - logit_base) + logit_pre,
+    b0 ~ (1 + 1|subj_id),
+    nl=TRUE
+    ),
+  prior = prior(normal(1, .5), nlpar="b0"),
+  data = df,
+  family = Beta("logit"),
+  save_pars = save_pars(all = TRUE),
+  chains = 4,
+  cores = 4,
+  file = "../local/dbayes"
+)
+
+fit_op_mlm <- brm(
+  bf(
+    post ~ (b0 + b1*good_news)*(logit_truebase - logit_base) + logit_pre,
+    b0 + b1 ~ (1 + 1|subj_id),
+    nl=TRUE
+    ),
+  prior = prior(normal(1, .5), nlpar="b0") +
+    prior(normal(0, .5), nlpar="b1"),
+  data = df_reg,
+  family = Beta("logit"),
+  save_pars = save_pars(all = TRUE),
+  chains = 4,
+  cores = 4,
+  file = "../local/op_model"
+)
+
+add_epred_interval <- function(data, model, values = c(".epred", ".lower", ".upper"), ...){
+  # only works/tested for brms models
+  preds <- fitted(model, data, ...) %>% 
+    as_tibble() %>% 
+    select(-Est.Error)
+  
+  colnames(preds) <- values
+  
+  bind_cols(data, preds)
+}
+
+rmse <- function(x1, x2){
+  sqrt(mean((x1 - x2)^2))
+}
+
+df_reg %>% 
+  mutate(.epred = plogis(logit_pre + (logit_truebase - logit_base))) %>% 
+  mutate(change = post-pre, pred_change = .epred - pre) -> x1 
+
+df_reg %>% 
+  add_epred_interval(fit_dbayes_mlm) %>% 
+  mutate(change = post-pre, pred_change = .epred - pre) -> x2
+
+# loo_rational_desc <- loo(fit_dbayes_mlm, fit0)
+# loo_cons_v_op <- loo(fit_dbayes_mlm, fit_op_mlm)
+```
+
+```{r fit-compare, include=F}
+x1 %>% 
+  group_by(subj_id) %>% 
+  summarize(corr = cor(change, pred_change)) %>% 
+  count(corr^2 > .90)
+```
+
+
+"The truth hurts" or so you may have variously heard from poets, singers, and philosophers---from Twain, Nietzche, and Lizzo alike. 
+
+The formation and maintenance of veridical beliefs in light of new experiences is a key function of cognition. Accurate beliefs are essential to inform adaptive action in the present and plans for the future. Nevertheless, some truths can sting: It can be hard to accept that a leader has betrayed us, that our actions have hurt others, or that our hopes for the future are unlikely to be realized. In such cases, truth-seeking might compete with other motivational factors: for instance, people might seek to maintain face within their ingroup [e.g. @kahan2013], preserve their positive self-concept [e.g. @dunning.etal1989; @sanitioso.etal1990], or feel good about the future [ e.g. @sharot2011; @sharot.etal2011]. 
+
+Consistent with the idea that such motivated reasoning is pervasive [@kunda1990], a large body of findings suggest that people’s expectations about the future are unreasonably rosy [e.g. @sharot2011; @sharot.etal2011; @chowdhury.etal2014; @weinstein1980]. This "unrealistic optimism" is typically thought to reflect a self-serving bias to feel positively about one’s own future. This desire affects how new experiences and information are interpreted, leading to the "motivational modulation" of evidence [@sharot2011] and the discounting of "bad news."
+
+In a now-classic study, Sharot and colleagues [-@sharot.etal2011] asked participants to estimate their own personal risk for a number of different positive and negative life events. Then, they presented those participants with information on the true base rate risk for those events in the population and asked them to again estimate their own personal risk. Many studies report that the differences between participants' initial and updated estimates are greater (in magnitude) when the base rate was lower than participants’ own estimates for negative events and higher for positive events. From this, researchers have concluded that people are optimistically biased in their belief updating [e.g. @chowdhury.etal2014; @sharot.etal2011; @kuzmanovic.etal2015].
+
+However, Shah and colleagues [-@shah.etal2016] identified serious flaws in the logic of these belief updating experiments. Most fundamentally, these original studies do not provide sufficient information to determine whether the information being presented to participants constitutes good or bad news. This is because people’s perceptions of their own personal risk and baseline risk are not necessarily the same. Alice might reasonably believe that the risk for skin cancer in the general population is 3%, but that her own risk is 10% given her complexion, family history, and so forth. And Bob might reasonably believe that the prevalence of skin cancer in the general population is 10%, but that his own risk is 5% given his own personal characteristics. Suppose these two are both informed that the true risk is 6%. Intuitively, it should be clear this is bad news for Alice (being higher than they expected) and good news for Bob, but the procedures used by previous research [e.g. @sharot.etal2011] would reverse these categorizations.
+
+Determining whether people’s belief updating is biased and could therefore constitute evidence for motivated reasoning requires a comparison against a rational standard. More broadly, there are a number of examples of apparent biases in belief revision and formation that can be explained by alternative rational accounts [e.g. @austerweil.griffiths2011; @navarro.perfors2011; @chater.etal2020; @jern.etal2014].
+
+So, is there an optimism bias? And can such a bias be demonstrated in clear contrast to any competing rational accounts?
+
+## A rational model for belief revision
+
+Bayes rule provides a normative, rational standard for belief updating. According to Bayes’ rule, the posterior probability of a hypothesis given some evidence can be calculated from the probability of the evidence given the hypothesis (the likelihood) and the prior probability of the hypothesis in the absence of this evidence.
+
+\begin{equation}
+P(h|d) = \frac{P(d|h)P(h)}{P(d)}
+\end{equation}
+
+To judge their own personal risk, a rational reasoner would integrate any knowledge or evidence they possess about their own relative personal risk with their estimation of the prior or average risk. This can be expressed simply using the log-odds form of Bayes Rule, whereby the log odds of the posterior is the sum of the prior odds and the log of what is sometimes called an "evidence ratio" (ER). 
+
+\begin{equation}
+\text{Posterior log-odds} = \text{Prior log-odds} + log \ \text{ER}
+\end{equation}
+
+The evidence ratio is the ratio of the likelihoods of the data given the hypothesis, $P(D|H)/P(D|\neg H)$ (hence it is also sometimes called a likelihood ratio). This evidence ratio, or the evidence an individual possesses (or believes themselves to possess), can thus be inferred from their estimates of the base rates and their own risk. After being informed of the true base rate, a rational reasoner should then update their beliefs about their own personal risk accordingly, substituting in the new base rate. With some algebra, the log-odds of the posterior belief can be calculated from the prior base rate estimate, the prior personal risk estimate, and the true base rate provided. With all terms transformed to log-odds, the schematic form of the equation is:
+
+\begin{equation}
+\begin{split}
+\text{Posterior risk} = & \text{prior risk} + \\
+ \text{(true base rate} & - \text{ prior perceived base rate)}
+\end{split}
+\end{equation}
+
+Shah and colleagues [-@shah.etal2016] use this rational analysis to derive predictions for rational belief updating and attempted to design studies that could demonstrate evidence for optimism as compared with a true rational standard. Their results actually provided some evidence for _pessimism_ rather than optimism. However, they note several challenges that complicate their attempts to address this research question: most fundamentally, issues posed by the boundedness of the probability scale for the use of additive statistical models.
+
+Fortunately these concerns are relatively straightforwardly addressed by recent computational advances that simplify the estimation of Bayesian generalized linear models with non-normal response distributions. As described in the following section, this makes Shah and colleagues’ [-@shah.etal2016] paradigm an attractive test case for exploring belief updating and motivated reasoning generally. Much of the original foundational work on Bayesian belief updating concerned reasoning tasks about entirely artificial contexts, such as flipping coins or drawing differently-colored balls from urns [e.g. @edwards1968]. These artificial tasks made it easy to define what is "rational". Sharot and colleagues’ [-@sharot.etal2011] base rate task, as refined by Shah and colleagues [-@shah.etal2016], similarly offers a clear definition of rational belief updating, but in the context of more ecologically-valid and meaningful beliefs. 
+
+
+## Descriptive Bayesian models of belief revision
+
+The methodological challenges raised by Shah and colleagues [-@shah.etal2016] can be addressed by adopting a descriptive Bayesian approach that estimates deviations from optimality as part of a Beta regression model predicting posterior beliefs. 
+
+The equations above provide an optimal rational model for belief revision in light of base rate information. But this optimal model can also be extended to form a variety of descriptive Bayesian models that can be used to examine possible deviations from optimality–including biases plausibly evidencing motivated reasoning. Comparisons of these descriptive models promise a test of motivated versus rational belief updating that is valid by the Bayesian perspective’s own lights.
+
+The equation below expresses the rational model’s predictions for the posterior judgment ($\mu$) given a specific prior risk judgment ($x$), the true base rate ($b$) and the initial perceived base rate ($\tilde{b}$) for a participant $i$ and item $j$. Grouping the last two terms of equation 4 together with parenthesis should make its appearance familiar: together these last two terms form the log evidence ratio representing the evidence provided by the true base rate for a person’s personal risk estimate. 
+
+\begin{equation}
+logit(\mu_{ij}) = logit(x_{ij}) + \big(logit(b_{j}) - logit(\tilde{b}_{ij})\big)
+\end{equation}
+
+The regression equation above defines a generalized linear model, where inputs are transformed by the logit function and responses on the probability scale are connected to the linear model with a logit link function. This regression equation can be combined with a Beta likelihood to model people’s posterior probability judgments ($y_{ij}$). The Beta distribution is a continuous probability distribution for probabilities or proportions, that is naturally bounded in [0, 1]. In the context of Beta regression, it is parameterized by its central tendency $\mu$ and precision $k$.
+
+\begin{equation}
+y_{ij} \sim Beta(\mu_{ij} k, (1-\mu_{ij})k)
+\end{equation}
+
+Under the rational model, the predicted posterior probability is fixed by the equation as written. But under a descriptive Bayesian model, additional terms can be added to capture how belief revision might deviate from optimality.
+
+Over 50 years of cognitive psychological research has found that people often do not update their beliefs as they ought to according to Bayes rule, a phenomenon known as "conservatism" [@edwards1968; @erev.etal1994; @fischhoff.beyth-marom1983]. These findings are quite robust, although there is considerable contention about their source [@erev.etal1994]. They may owe to a general "anchoring" response-bias [e.g. @slovic.lichtenstein1971] or to imperfect representation of the evidence [@edwards1968]. Or, apparent "conservatism" may simply reflect an imperfect trust of the information being provided in cognitive psychological experiments [@corner.etal2010]. In any case, the degree to which participants incorporate new base rate evidence when updating their beliefs can be captured by adding the multiplicative parameter $\alpha$ to the regression equation.[^1] 
+
+\begin{equation}
+logit(\mu_{ij}) = logit(x_{ij}) + \alpha_i\big(logit(b_{j}) - logit(\tilde{b}_{ij})\big)
+\end{equation}
+
+Extending this descriptive Bayesian approach further allows for a test of optimism in belief updating. The multiplicative term can be expanded into a linear equation, with a new coefficient $\beta$ and a new variable $g_{ij}$, a binary variable representing whether the information being presented represents good news (1) or bad news (0). This binary variable is coded 1 for negative events where participants perceived the base rates to be higher than the true base rates, 1 for positive events where participants perceived the base rates to be lower than the true base rates, and zero otherwise. The $\beta$ coefficient thus offers a test of optimism: if $\beta$ is greater than zero, this indicates optimism (greater incorporation of evidence for good rather than bad news). If it is less than zero, this indicates pessimism.
+
+\begin{equation}
+logit(\mu_{ij}) = logit(x_{ij}) + (\alpha_i + \beta_i g_{ij}) \big(logit(b_{j}) - logit(\tilde{b}_{ij})\big)
+\end{equation}
+
+
+# Methods
+
+This study was preregistered (https://osf.io/k4am6). All data and analysis code are available at https://osf.io/crp98/.
+
+## Participants
+
+A total of `r nrow(df_all)` participants were recruited through the CloudResearch survey recruitment platform, which provides access to a group of prescreened workers from Amazon’s mechanical Turk work distribution website. All participants were at least 18 years old and were located in the United States. Participants were compensated \$2.25 for approximately 10 to 15 minutes of participation. Participants who failed a simple attention check question were excluded from analysis, leaving a final sample of `r nrow(df_passing)` participants (`r N_female_Ps` female, median age `r median_age`).
+
+## Materials and procedures
+
+Twenty potential life events were drawn from a larger pool of items used by Shah et al. (2016). Ten of the events were positive (e.g. living to be at least 90 years old), and ten were negative (e.g. being diagnosed with cancer).
+
+For each event, participants estimated their own probability of experiencing the event and the average person’s probability of experiencing the event (order counterbalanced across participants). Then, they were informed of the true base rates for the event. Finally, they rated their own personal estimate of their risk after having seen this information. All questions were presented on individual screens and numerical responses were freely typed. 
+
+After completing the primary task, participants were also asked to respond to the Life Orientation Test-Revised [LOT-R, @scheier.etal1994], a measure of personality trait optimism.
+
+# Results
+
+All models were implemented as fully Bayesian mixed-effects models using the non-linear syntax functions of the brms R package [@burkner2017]. Model posteriors were estimated using the No-U-Turn Markov Chain Monte Carlo (MCMC) sampler implemented in Stan. Four MCMC chains were run, with 2000 samples (1000 burn-in) drawn from each. Chains were assessed for convergence with $\hat{R}$ and the total estimated effective sample size was verified to be greater than 1000 for all parameters [@gelman.etal2014a].
+
+```{r figure1, message=F, fig.env="figure", fig.pos = "h", fig.align = "center", fig.width=2.75, fig.height=2.75, fig.cap = "Predicted versus observed changes in probability judgments under the descriptive Bayesian model with $\\alpha$ parameter across all responses."}
+
+df %>% 
+  add_epred_interval(fit_dbayes_mlm) %>% 
+  mutate(change = post-pre, pred_change = .epred-pre) %>% 
+  ggplot(aes(x=pred_change, y = change)) +
+  geom_point(alpha=.25, size=.7) +
+  geom_abline(intercept=0, slope=1, linetype="dashed") +
+  theme_bw() +
+  theme(aspect.ratio=1, panel.grid=element_blank()) +
+  labs(x="Predicted change", y= "Observed change")
+
+```
+
+
+```{r figure2, message=F, fig.env="figure*", fig.pos = "!h", fig.align = "center", fig.width=7.5, fig.height=2.5, fig.cap = "Forest plots of participant-level $\\alpha$ (left) and $\\beta$ (right) parameters from descriptive Bayesian models of belief revision. Individual estimates for $\\alpha$ that do not credibly differ from 1 are highlighted, indicating responses consistent with rational responding. On the right, estimates for $\\beta$ that are credibly above or below zero are highlighted to indicate optimism and pessimism.", num.cols.cap=2}
+con_params <- fit_dbayes_mlm %>% 
+  spread_draws(r_subj_id__b0[subj_id,], b_b0_Intercept) %>% 
+  mutate(evid_factor = (r_subj_id__b0 + b_b0_Intercept)) %>% 
+  group_by(subj_id) %>% 
+  summarize(
+    M = mean(evid_factor),
+    ul = quantile(evid_factor, .975),
+    ll = quantile(evid_factor, .025)
+  )
+
+plt_forest1 <- con_params %>% 
+  mutate(con_status = case_when(
+    (ul < 1 & M < 1) ~ "Conservative",
+    TRUE ~ "Non-conservative",
+  )) %>% 
+  ggplot(aes(x=reorder(subj_id, M), color = con_status, y=M, ymin=ll, ymax=ul)) +
+  geom_pointrange(size=.3, alpha=.5) +
+  geom_hline(yintercept = 1, linetype = "dashed", color="grey") +
+  scale_color_manual(values=c("grey50","blue")) +
+  labs(x="Participant", y = "alpha-parameter", color="Conservatism") +
+  theme_bw(base_size=9) +
+  # coord_flip() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "bottom",
+    # legend.direction = "vertical"
+    )
+
+plt_forest2 <- fit_op_mlm %>% 
+  spread_draws(r_subj_id__b1[subj_id,], b_b1_Intercept) %>% 
+  mutate(evid_factor = (r_subj_id__b1 + b_b1_Intercept)) %>% 
+  group_by(subj_id) %>% 
+  summarize(
+    M = mean(evid_factor),
+    ul = quantile(evid_factor, .975),
+    ll = quantile(evid_factor, .025)
+  ) %>% 
+  mutate(valence_effect = case_when(
+    (ul < 0 & M < 0) ~ "Pessimistic",
+    (ll > 0 & M > 0) ~ "Optimistic",
+    TRUE ~ "Neutral",
+  )) %>% 
+  ggplot(aes(x=reorder(subj_id, M), color=valence_effect, y=M, ymin=ll, ymax=ul)) +
+  geom_pointrange(size=.3, alpha=.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color="black") +
+  scale_color_manual(values = c("grey50", "blue", "red")) +
+  labs(x="Participant", y = "beta-parameter", color = "Optimism/Pessimism") +
+  theme_bw(base_size=9) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "bottom"
+    )
+
+plt_forest1 + plt_forest2 + plot_layout(ncol=2)
+```
+
+
+## Rational versus descriptive Bayesian models
+
+A rational Bayesian model of belief updating can be used to predict posterior (i.e. posttest) beliefs a priori, without requiring any parameters be estimated. In contrast, descriptive Bayesian models must be fit to data. 
+
+First, I compared a rational Bayesian model’s predictions (equation 4) against a descriptive Bayesian model incorporating a multiplicative parameter for each individual participant that estimates the degree to which they incorporate new evidence into their beliefs (equation 6). This was a Bayesian hierarchical Beta regression model that also included population-level parameters for the expectation and spread of this update multiplier. 
+
+Both models can be treated as Beta regressions, where participants’ posterior (posttest) beliefs are distributed under a Beta distribution parameterized according to its expectation $\mu$ and spread $k$ (equation 5).
+
+These models both predict posterior beliefs, but it is of particular interest how well they capture changes in people’s beliefs. The descriptive Bayesian model generates substantially better predictions for these changes ($R^2 =$ `r round(cor(x2$pred_change, x2$change)^2, 3)`) than did the rational model ($R^2 =$ `r round(cor(x1$pred_change, x1$change)^2, 3)`).
+
+Of course the descriptive Bayesian model is far more complex in its parameterization. The models can also be compared formally by $ELPD_{loo}$, an estimate of the posterior probability of new unseen data given the model and the posterior distribution of its parameters [@vehtari.etal2017]. This measure, an estimate of leave-one-out cross validation performance, provides an estimate of a model’s ability to generalize to new data that accounts for differences in model complexity.[^2] Again, the descriptive Bayesian model is very strongly preferred ($\Delta ELPD_{loo} = -1843$, $SE = 136.1$).
+
+On average, participants did not update their beliefs as much as Bayes’ rule prescribes, indicated by the estimated population-level multiplier parameter, $\alpha_{pop}$ = .60, 95% CI [.57, .64]. This is consistent with a large body of prior findings demonstrating conservatism in belief revision [e.g. @erev.etal1994; @edwards1968; @fischhoff.beyth-marom1983]. Figure 2 presents a forest plot showing the posterior distribution of participants’ multiplier parameters. As can be seen, the clear majority of these estimates are credibly below one, indicating that these participants shifted their beliefs less than predicted by Bayes rule. In addition, a number of participants’ estimated multiplier parameters are near zero, indicating they hardly updated their beliefs at all. 
+
+Nevertheless, there is substantial heterogeneity across individuals. It is especially worth emphasizing that a substantial portion of participants’ estimated multiplier parameters do not credibly differ from 1. Correspondingly, a good number of participants’ posterior beliefs and belief changes are well-captured by the rational Bayesian model ($R^2$ > .90 for 30 of 186 participants). Figure 3 shows predicted belief changes under the rational model against observed belief changes for a sampling of participants with different multiplier estimates.
+
+There were some participants who did not substantively update their beliefs at all in this task. These failures seem qualitatively different from the under-appreciation of evidence consistent with "conservatism." One possibility is that these participants were entirely distrustful of the experimental context. Another possibility is that they are exhibiting a form of base rate neglect. Base rate neglect is most commonly observed when people's judgments are _overly_ sensitive to diagnostic information, as they apparently neglect prior probability information [a sort of anti-conservatism, @kahneman.tversky1973; @tversky.kahneman1974a]. For instance, people might judge that a "shy student who enjoys math" is more likely to be a physics major than a psychology major, neglecting to consider that many more students study psychology than physics.
+
+```{r figure3, message=F, fig.env="figure*", fig.pos = "!h", fig.align = "center", fig.width=7.5, fig.height=3, fig.cap = "Illustration of participant-level variation in belief updating. Random participants were sampled from among participants with varying $\\alpha$ parameters. Faceted plots show predicted versus observed belief changes under the rational Bayesian model. Belief updating for participants with $\\alpha$ near 1 is largely consistent with the rational model's predictions. Participants with $\\alpha$ near zero generally fail to update their beliefs. Dashed lines indicate perfect correlation.", num.cols.cap=2}
+
+library(patchwork)
+
+change_facet_plot <- function(df, model){
+  df %>% 
+    add_epred_draws(model) %>% 
+    mutate(change = post-pre, pred_change = .epred-pre) %>% 
+    summarize(
+      M_change  = mean(change),
+      M = mean(pred_change),
+      ul = quantile(pred_change, .75),
+      ll = quantile(pred_change, .25)
+    ) %>% 
+    ggplot(aes(x=M, y = M_change)) +
+    geom_abline(intercept=0, slope=1, linetype="dashed", size=.5, color="grey") +
+    geom_point(size=.75) +
+    facet_wrap(~subj_id) +
+    theme_bw(base_size=9) +
+    theme(aspect.ratio=1, panel.grid=element_blank()) +
+    labs(x = "Predicted", y = "Observed")
+}
+
+set.seed(12345)
+
+df %>% 
+  right_join(
+    con_params %>% 
+      filter(between(M, .85, 1)) %>% sample_n(9)
+    , by = "subj_id") %>% 
+  change_facet_plot(fit0) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title=expression(alpha~`near 1`)) +
+
+df %>% 
+  right_join(
+    con_params %>% 
+      filter(between(M, .4, .6)) %>% sample_n(9)
+    , by = "subj_id") %>% 
+  change_facet_plot(fit0) +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title=expression(alpha~`near 1/2`)) +
+
+df %>% 
+  right_join(
+    con_params %>% 
+      filter(between(M, -.1, .3)) %>% sample_n(9)
+    , by = "subj_id") %>% 
+  change_facet_plot(fit0) +
+  theme(axis.title.y = element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title=expression(alpha~`near 0`))
+```
+
+
+The base rate updating task here requires some active understanding of Bayesian inference: participants must appreciate that base rates (priors) are relevant to their own personal risk (posteriors). Some participants may fail to reason about this appropriately, thereby failing to see the relevance of the base rate information and neglecting to update their beliefs.
+
+
+## Optimism in belief updating
+
+Optimism or pessimism in belief updating can be examined by extending the descriptive Bayesian model with an additional parameter sensitive to the valence of the evidence being provided (captured in equation 7 above). This model adds a predictor indicating whether the news is classified as good (1) or bad (0), and a multiplicative coefficient that codes for the difference in updating for good versus bad news. The addition of this parameter substantially improves the quality of the model fit, as indicated by $ELPD_{loo}$ ($\Delta ELPD_{loo} = -72.8$, $SE = 26.5$).
+
+Optimism can be tested by examining the $\beta$ coefficient in this model, which codes for the difference in the use of evidence constituting "good news" versus "bad news". Fitting the model reveals that participants displayed modest pessimism on average, with $\beta$’s posterior expectation equal to -.10 and a 95% credible interval ranging from -.14 to -.06. 
+
+```{r nofigure, message=F, fig.env="figure*", fig.pos = "!h", fig.align = "center", fig.width=6, fig.height=2, fig.cap = "asdf", num.cols.cap=2}
+
+# fit_op_mlm %>% 
+#   spread_draws(r_subj_id__b1[subj_id,], b_b1_Intercept) %>% 
+#   mutate(evid_factor = (r_subj_id__b1 + b_b1_Intercept)) %>% 
+#   group_by(subj_id) %>% 
+#   summarize(
+#     M = mean(evid_factor),
+#     ul = quantile(evid_factor, .975),
+#     ll = quantile(evid_factor, .025)
+#   ) %>% 
+#   mutate(valence_effect = case_when(
+#     (ul < 0 & M < 0) ~ "Pessimistic",
+#     (ll > 0 & M > 0) ~ "Optimistic",
+#     TRUE ~ "Neutral",
+#   )) %>% 
+#   ggplot(aes(x=reorder(subj_id, M), color=valence_effect, y=M, ymin=ll, ymax=ul)) +
+#   geom_pointrange(size=.5) +
+#   geom_hline(yintercept = 0, linetype = "dashed", color="black") +
+#   scale_color_manual(values = c("grey50", "blue", "red")) +
+#   labs(x="Participant", y = "beta-parameter", color = "Optimism/Pessimism") +
+#   theme_bw() +
+#   theme(
+#     panel.grid = element_blank(),
+#     axis.text.x = element_blank(),
+#     axis.ticks.x = element_blank(),
+#     legend.position = "right"
+#     )
+```
+
+
+Figure 2 (right) presents a forest plot showing the posterior distribution of participants’ $\beta$ coefficients. As can be seen, there is substantial heterogeneity across individual participants. Consistent with the average estimates, a greater number (25 of 186) of participants $\beta$ coefficient estimates reliably indicate pessimism at the individual-level, and only a handful (3 of 186) reliably evinced optimism (by 95% credible interval). 
+
+Consistent with this heterogeneity, a number of studies have explored the potential for individual differences in optimistic belief updating. For instance, Kuzmanovic and colleagues [@kuzmanovic.etal2015] report that "optimism" in belief revision was correlated with trait optimism as measured by the Life Orientation Test - Revised (LOT-R) [@scheier.etal1994]. In addition, Chowdhury and colleagues [-@chowdhury.etal2014] report finding greater optimism among older adults as compared with younger adults, over and above the effects of trait optimism. 
+
+```{r figure4, message=F, fig.env="figure", fig.pos = "!h", fig.align = "center", fig.width=3, fig.height=4.75, fig.cap = "Scatterplot and least-squares regression line showing the association between age (top) and LOT-R responses (bottom) and inferred $\\beta$ optimism parameters for individaul participants. Error bars indicate 95\\% credible intervals of parameter estimates.", num.cols.cap=2}
+library(patchwork)
+
+
+  fit_op_mlm %>% 
+  spread_draws(r_subj_id__b1[subj_id,], b_b1_Intercept) %>% 
+  mutate(evid_factor = (r_subj_id__b1 + b_b1_Intercept)) %>% 
+  left_join(df_reg, by="subj_id") %>% 
+  group_by(subj_id, age, lotr) %>% 
+  summarize(
+    M = mean(evid_factor),
+    ul = quantile(evid_factor, .975),
+    ll = quantile(evid_factor, .025)
+  ) -> x
+  
+(
+  x %>% 
+  ggplot(aes(x=age, y=M, ymin=ll, ymax=ul)) +
+  geom_point(alpha=.5) +
+  geom_errorbar(alpha=.25, width=0) +
+  geom_smooth(method="lm", fill="lightblue") +
+    theme_bw() +
+    theme(panel.grid=element_blank())
+) +
+  (
+  x %>% 
+    mutate(lotr = rnorm(n(), lotr, .2)) %>% 
+  ggplot(aes(x=lotr, y=M, ymin=ll, ymax=ul)) +
+   geom_point(alpha=.5) +
+  geom_errorbar(alpha=.25) +
+  geom_smooth(method="lm", fill="lightblue") +
+    theme_bw() +
+    theme(panel.grid=element_blank())
+) +
+    plot_layout(ncol=1)
+```
+
+However, neither age nor trait optimism appears to be correlated with "optimism" in belief updating as captured by the descriptive Bayesian model. Figure 4 shows the inferred optimism parameters (with 95% credible intervals) for all participants against their age and LOT-R scores. As is plain from the figure, neither are meaningfully correlated with optimism. One possibility is that prior findings were artifacts of the flawed measurement paradigm used in these studies. However, despite recruiting many more participants than these prior studies, the present study is somewhat lacking in its recruitment of older individuals. Thus further investigation may be warranted, including studies that recruit participants more uniformly across the age range and that utilize more experimental trials so as to better estimate individual-level optimism parameters.
+
+# Discussion
+
+This study tested optimism in belief revision through descriptive Bayesian modeling. Using Beta regression and a descriptive model inspired by rational analysis, I found evidence for substantial deviation from normative updating. In particular, most participants updated their beliefs less than would be expected from the direct application of Bayes' rule. However, in contrast to widespread claims of "optimism" in belief updating, I instead found greater evidence for pessimism.
+
+There was substantial individual heterogeneity in both the conservatism and pessimism effects that must qualify the population-average findings. A sizable subset of participants revised their beliefs in ways consistent with an entirely rational model of Bayesian belief updating. These participants did not exhibit any substantial conservatism, nor was their updating affected by the valence of the evidence provided. In addition, a small number of participants did exhibit optimism as could be reliably inferred from the model’s parameters.
+
+Motivational and Bayesian accounts of belief revision may be at odds, but there is no reason to expect these theories to be mutually exclusive. Instead, as these findings indicate, there is liable to be substantial individual and contextual variation: some people might be pessimists, perhaps fewer might be optimists, and many might be relatively even-keeled. Some people might reason rationally---only to show bias in another context. 
+
+Bearing this in mind, the development and application of Bayesian versus motivational accounts should be informed by the prevalence and relative magnitude of deviations from rationality in belief revision. On average, the findings here suggest conservatism is a more prevalent and stronger bias than pessimism. Consider, for example, public health officials trying to persuade people of the benefits of vaccines: these findings suggest they would be better served identifying and countering the sources of conservatism rather than pessimism. Moreover, any overall account of biases in belief revision should be tempered by the understanding that substantial numbers of people are apparently capable of and do engage in normatively rational belief revision. 
+
+Nevertheless, the impacts of affective valence on belief revision remains a worthy area of study with several interesting avenues for further research. 
+
+Pessimism presents some challenges to current motivational accounts of belief revision. According to such accounts, the pursuit of accurate beliefs is but one among many different motivations that might guide how people form and revise their beliefs. Perhaps the paradigmatic motivation is pleasure-seeking---to feel good about ourselves and the future. This is the sort of motivation thought to be served by optimistic belief updating biases. In addition, some have argued that optimistic biases might even serve some adaptive functions, such as supporting exploration by reducing anxiety and stress [@sharot.etal2011; @scheier.etal1989; @taylor.etal2000]. However, the present findings suggest that optimistic biases are quite rare and instead pessimistic biases are more prevalent. 
+
+Pessimism runs directly counter to the most immediate and paradigmatic pleasure-seeking motivations. An alternate motiational account of pessimism could be that lowering one’s expectations guards against *future* disappointments, thereby serving as a regulatory coping mechanism [see e.g. @gul1991; @mellers.etal1997; @powell.horne2018]. It could be further argued that a pessimistic outlook serves adaptive functions by encouraging defensive planning and preparation that helps people to weather hardships. If these proposals seem at all persuasive, this should make clear that current motivational accounts are underspecified, as they can apparently offer justifications for either optimistic or pessimistic biases. 
+
+One potential explanation is that optimistic and pessimistic motivations compete: that there is an immediate motivation for optimism but also a longer-term motivation for pessimism. Empirical support for this sort of motivational account might be found by quantifying the subjective value of present anticipation or dread over time against the anticipated dampening of future negative emotional experiences. Under a motivational account, people should be optimistic when the positive feelings associated with the formation of a desireable belief (and then experienced over time) outweigh the expected increase in negative feelings if a negative outcome should actually eventually occur. And people should be pessimistic if the negative feelings associated with the formation and maintenance of an undesirable belief are outweighed by the expected decrease in negative feelings if the negative outcome should occur.
+
+Altogether, the present findings call for a re-evaluation of "optimism" in belief revision and of existing theories of motivated reasoning. It may be possible to develop a motivational account of the present findings of pessimism, but further nuance and investigation are needed to advance such an account.
+
+
+[^1]:
+     If "mistrust" of the experimentally-provided evidence is the source of conservatism (as suggested by Corner and colleagues [-@corner.etal2010], then some belief-updating contexts might be better represented as a case of Jeffrey-conditionalization [@jeffrey1983]. In this case, an analogous $\alpha$ parameter would represent the probability people assign to the facts presented. However, given that the base rate information being provided here is a continuous quantity, this may not be a complete representation of the evidence’s interpretation.
+
+[^2]:
+     Note that this does require one parameter to be fit for the rational model, capturing the spread of the Beta distribution, $k$.
+
+# References 
+
+```{r}
+# References will be generated automatically by Pandoc and included here.
+# The following code is some latex to format the bibliography. Do not remove it.
+```
+
+\setlength{\parindent}{-0.1in} 
+\setlength{\leftskip}{0.125in}
+\noindent
