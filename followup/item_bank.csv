@@ -1,0 +1,69 @@
+item_id,status,cluster,event_text,valence,frame_pair,time_horizon,population,rate_band,base_rate,suggested_source,citation,verified,notes
+E01,existing,crime,be a victim of a car break-in,-,,lifetime,US adults,common,76,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E02,existing,mortality,die before the age of 80,-,P80,lifetime,US adults,moderate,41,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E03,existing,health,suffer heart failure,-,,lifetime,US adults,moderate,31,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E04,existing,mortality,die before the age of 70,-,P70,lifetime,US adults,low,18,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E05,existing,health,suffer a stroke,-,,lifetime,US adults,low,17,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E06,existing,crime,be physically assaulted by a stranger,-,,lifetime,US adults,moderate,26,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E07,existing,health,be diagnosed with any kind of cancer,-,,lifetime,US adults,moderate,40,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E08,existing,relationships,become divorced,-,,lifetime,US adults,moderate,45,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E09,existing,health,have cataracts,-,,lifetime,US adults,common,65,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E10,existing,health,be diagnosed with skin cancer,-,,lifetime,US adults,rare,3,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,"3% fits melanoma, not any skin cancer; reword or update rate"
+E11,existing,financial,become a homeowner,+,,lifetime,US adults,common,82,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,desirability varies
+E12,existing,mortality,live past 90 years old,+,P90,lifetime,US adults,low,11,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E13,existing,health,maintain a healthy weight,+,,lifetime,US adults,common,58,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E14,existing,career,have an achievement recognized by the press,+,,lifetime,US adults,rare,3,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,desirability varies
+E15,existing,financial,have the financial security to retire comfortably at 65,+,,lifetime,US adults,moderate,22,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E16,existing,mortality,live past 100 years old,+,,lifetime,US adults,rare,1,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,almost always bad news in 2021 data
+E17,existing,relationships,be in a marriage that lasts at least 10 years,+,,lifetime,US adults,common,61,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,desirability varies
+E18,existing,financial,"be earning more than $75,000/yr within 5 years",+,,next 5 years,US adults,low,16,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E19,existing,financial,"be earning more than $100,000/yr within 5 years",+,,next 5 years,US adults,low,9,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+E20,existing,everyday,make it through all of next year without catching a cold,+,,next year,US adults,moderate,23,Shah et al. (2016) item pool; rate as shown in Powell (2022),,FALSE,
+N21,new,health,develop type 2 diabetes,-,,lifetime,US adults,moderate,,CDC,,FALSE,
+N22,new,health,get shingles,-,,lifetime,US adults,moderate,,CDC,,FALSE,
+N23,new,health,be diagnosed with depression at some point,-,,lifetime,US adults,moderate,,NIMH / NSDUH,,FALSE,
+N24,new,health,develop dementia,-,,lifetime,US adults,moderate,,Alzheimer's Association; published lifetime-risk studies,,FALSE,
+N25,new,health,need a hip or knee replacement,-,,lifetime,US adults,low,,AAOS / published lifetime-risk studies,,FALSE,
+N26,new,health,reach age 65 without being diagnosed with a chronic disease,+,,by age 65,US adults,low,,CDC / MEPS,,FALSE,
+N27,new,health,need reading glasses by age 50,-,,by age 50,US adults,common,,AAO / NEI,,FALSE,low stakes
+N28,new,mortality,live past 85,+,P85,lifetime,US adults,moderate,,SSA period life tables,,FALSE,show to half of participants; pair with die before 85
+N29,new,mortality,die before the age of 85,-,P85,lifetime,US adults,moderate,,SSA period life tables,,FALSE,
+N30,new,mortality,live past 80,+,P80,lifetime,US adults,common,,SSA period life tables,,FALSE,pairs with existing 'die before the age of 80'
+N31,new,mortality,live past 70,+,P70,lifetime,US adults,common,,SSA period life tables,,FALSE,pairs with existing 'die before the age of 70'
+N32,new,mortality,die before the age of 90,-,P90,lifetime,US adults,common,,SSA period life tables,,FALSE,pairs with existing 'live past 90 years old'
+N33,new,mortality,live past 95,+,,lifetime,US adults,low,,SSA period life tables,,FALSE,
+N34,new,mortality,die of heart disease,-,,lifetime,US adults,low-moderate,,NSC Injury Facts odds of dying / CDC WONDER,,FALSE,
+N35,new,mortality,die in a car crash,-,,lifetime,US adults,rare,,NSC Injury Facts odds of dying,,FALSE,
+N36,new,mortality,die from an accidental fall,-,,lifetime,US adults,rare,,NSC Injury Facts odds of dying,,FALSE,
+N37,new,accidents,never be in a car crash as the driver,+,,lifetime,US adults,low,,NHTSA / insurance industry estimates,,FALSE,positive framing of a common danger
+N38,new,accidents,go to the emergency room for an accidental injury,-,,next 5 years,US adults,moderate,,CDC NEISS-AIP / WISQARS,,FALSE,
+N39,new,accidents,be bitten by a dog badly enough to need medical care,-,,lifetime,US adults,low,,CDC / NEISS,,FALSE,
+N40,new,accidents,have a fire in your home,-,,lifetime,US adults,low,,NFPA,,FALSE,
+N41,new,accidents,"have your home damaged by a flood, wildfire, or major storm",-,,lifetime,US adults,varies,,FEMA National Risk Index,,FALSE,region-specific; screen by location or drop
+N42,new,crime,have your identity stolen,-,,lifetime,US adults,moderate,,BJS Identity Theft Supplement / FTC,,FALSE,
+N43,new,crime,lose money to an online scam,-,,lifetime,US adults,moderate,,FTC Consumer Sentinel / BJS,,FALSE,
+N44,new,crime,have your home burglarized,-,,lifetime,US adults,moderate,,BJS NCVS,,FALSE,
+N45,new,crime,have a car stolen,-,,lifetime,US adults,low,,NICB / BJS NCVS,,FALSE,
+N46,new,crime,never be the victim of a violent crime,+,,lifetime,US adults,common,,BJS NCVS,,FALSE,positive framing
+N47,new,financial,have a net worth over $1 million at retirement,+,,lifetime,US adults,low,,Federal Reserve SCF,,FALSE,
+N48,new,financial,have a credit score above 800,+,,current,US adults,moderate,,FICO / Experian,,FALSE,
+N49,new,financial,"inherit more than $100,000",+,,lifetime,US adults,low,,Federal Reserve SCF,,FALSE,
+N50,new,financial,have a debt sent to collections,-,,lifetime,US adults,moderate,,CFPB / Urban Institute,,FALSE,
+N51,new,financial,declare bankruptcy,-,,lifetime,US adults,low,,US Courts / published lifetime-risk estimates,,FALSE,
+N52,new,financial,face an unexpected $400 expense you cannot cover with cash or its equivalent,-,,next year,US adults,moderate,,Federal Reserve SHED,,FALSE,
+N53,new,financial,"win more than $1,000 in a lottery",+,,lifetime,US adults,rare,,state lottery odds / surveys,,FALSE,
+N54,new,career,earn a graduate degree,+,,lifetime,US adults,low,,US Census CPS / ACS,,FALSE,condition on age and current education
+N55,new,career,start your own business,+,,lifetime,US adults,low-moderate,,BLS / Census Business Formation Statistics,,FALSE,
+N56,new,career,supervise other employees at some point in your career,+,,lifetime,US adults,moderate,,BLS / survey estimates,,FALSE,
+N57,new,career,be laid off,-,,next 5 years,US adults,moderate,,BLS Displaced Worker Survey,,FALSE,
+N58,new,career,be unemployed for 6 months or more at some point,-,,lifetime,US adults,low-moderate,,BLS NLSY,,FALSE,
+N59,new,relationships,have grandchildren,+,,lifetime,US adults,common,,Census / Pew,,FALSE,desirability varies; collect per-person desirability ratings
+N60,new,relationships,stay married to your first spouse for life,+,,lifetime,US adults,moderate,,CDC NSFG / Census,,FALSE,desirability varies; condition on marital status
+N61,new,relationships,be widowed before age 70,-,,by age 70,US adults,low,,Census / SSA,,FALSE,
+N62,new,relationships,become estranged from a close family member,-,,lifetime,US adults,moderate,,"published survey estimates (e.g., Cornell Family Rift Study)",,FALSE,
+N63,new,relationships,have twins,+/-,,lifetime,US adults,rare,,CDC NVSS births data,,FALSE,valence ambiguous; useful only with desirability ratings
+N64,new,everyday,catch the flu this coming winter,-,,next year,US adults,low,,CDC flu burden estimates,,FALSE,low stakes
+N65,new,everyday,lose or break your phone,-,,next year,US adults,moderate,,industry surveys,,FALSE,low stakes; weak sources
+N66,new,everyday,have a package stolen from your door,-,,next year,US adults,moderate,,industry surveys,,FALSE,low stakes; weak sources
+N67,new,everyday,get a speeding or parking ticket,-,,next year,US adults,low-moderate,,state DMV / survey estimates,,FALSE,low stakes
+N68,new,everyday,have no delayed flights,+,,next year,US adults,low-moderate,,BTS on-time statistics,,FALSE,low stakes; only for people who fly; depends on number of flights

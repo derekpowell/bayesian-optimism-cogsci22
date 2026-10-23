@@ -1,0 +1,495 @@
+---
+title: "IRT optimism analysis"
+author: "George"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  quick: false  # TRUE = 2 short chains per model, for smoke-testing the pipeline
+  kfold: true   # grouped K-fold CV (slow the first time; results are cached)
+---
+
+The descriptive Bayesian model in Powell (CogSci 2022) is
+
+$$\text{logit}(\mu_{ij}) = \text{logit}(x_{ij}) + (\alpha_i + \beta_i g_{ij})\,E_{ij},\qquad E_{ij} = \text{logit}(b_j) - \text{logit}(\tilde b_{ij})$$
+
+where $x$ is the personal prior (`_P1`), $\tilde b$ the participant's estimate of the average person's risk (`_B1`), $b$ the true base rate shown (`item_prob`), and the response is the personal posterior (`_S2`). $g_{ij}$ codes good news.
+
+Because $\text{logit}(x_{ij})$ enters with a fixed coefficient of 1, this is a Beta GLMM with an offset and a person-level random slope on $E$: `post ~ 0 + E + offset(logit_pre) + (0 + E | subj)`. In IRT terms, $\alpha_i$ is a person trait ("evidence sensitivity"), $E_{ij}$ is a known, trial-varying stimulus intensity, and the paper's model has no item parameters. The ladder below adds them.
+
+| Model | Adds | IRT analogue |
+|---|---|---|
+| M0 | Rational model, $\alpha = 1$ | — |
+| M1 | Person $\alpha_i$ (paper's `dbayes`) | Person-only (Rasch without items) |
+| M2 | Person $\beta_i$, **correlated** with $\alpha_i$ (paper's `op_model` had them independent) | 2-dimensional person model |
+| M3 | Item random slopes on $\alpha$ and $\beta$ | Crossed person × item (1PL-like) |
+| M3b | LOT-R and age predicting $\alpha$, $\beta$ | Latent regression / explanatory IRT |
+| M4 | Item loadings $\lambda_j$ on the person $\alpha$ trait | 2PL |
+| M5 | Separate "update at all?" and "how much?" parts, correlated across parts | Two-part / hurdle IRT |
+| M6 | Free weights on $b$ and $\tilde b$ | Tests the rational-model constraint |
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(brms)
+library(tidybayes)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# /local/ is gitignored; fits are cached there and refit only when the model changes
+fit_dir <- if (params$quick) "local/irt-fits/quick" else "local/irt-fits"
+dir.create(fit_dir, recursive = TRUE, showWarnings = FALSE)
+
+fit_brm <- function(name, ...) {
+  brm(
+    ...,
+    chains = if (params$quick) 2 else 4,
+    iter = if (params$quick) 500 else 2000,
+    cores = 4,
+    seed = 2022,
+    save_pars = save_pars(all = TRUE),
+    file = file.path(fit_dir, name),
+    file_refit = "on_change"
+  )
+}
+```
+
+```{r process-data, eval=F}
+df_all <- read_csv("data/life-events-large-2021-12-14.csv") %>%
+  filter(DistributionChannel=="anonymous") %>%
+  rename(Duration = `Duration (in seconds)`) %>%
+  mutate(subj_id = 1:n())
+
+df_passing <- df_all %>%
+  filter(Progress==100, check_77==77) %>%
+  select(subj_id, contains("_B"), contains("_P"), contains("_S"), contains("lotr"), age, gender, marital)
+
+items <- read_tsv("be a victim of a car break-in	76
+die before the age of 80	41
+suffer heart failure	31
+die before the age of 70	18
+suffer a stroke	17
+be physically assaulted by a stranger	26
+be diagnosed with any kind of cancer	40
+become divorced	45
+have cataracts	65
+be diagnosed with skin cancer	3
+become a homeowner	82
+live past 90 years old	11
+maintain a healthy weight	58
+have an achievement recognized by the press	3
+have the financial security to retire comfortably at 65	22
+live past 100 years old	1
+be in a marriage that lasts at least 10 years	61
+be earning more than $75,000/yr within 5 years	16
+be earning more than $100,000/yr within 5 years	9
+make it through all of next year without catching a cold	23",
+col_names = c("item_text", "item_prob")) %>%
+  mutate(item_num = as.character(1:20))
+
+df <- df_passing %>%
+  mutate_at(vars(contains("lotr_")), ~recode(.x,
+                            "Strongly agree" = 4,
+                            "Somewhat agree" = 3,
+                            "Neutral" = 2,
+                            "Somewhat disagree" = 1,
+                            "Strongly disagree" = 0)) %>%
+  mutate(
+    # LOT-R scored items are 1, 3, 4, 7, 9, 10 (3, 7, 9 reversed); 2, 5, 6, 8 are fillers.
+    # processed_data.Rdata was saved with the paper's scoring, which also added fillers 6 and 8;
+    # the corrected score is recomputed in the load-data chunk below.
+    lotr = lotr_1 + (4-lotr_3) + lotr_4 + (4-lotr_7) + (4-lotr_9) + lotr_10
+    ) %>%
+  select(-contains("lotr_")) %>%
+  gather(trial, response, contains("_B"), contains("_P"), contains("_S")) %>%
+  mutate(
+    trial_type = case_when(
+      grepl("_B1", trial) ~ "baserate",
+      grepl("_P1", trial) ~ "pre",
+      grepl("_S2", trial) ~ "post"
+    )
+  ) %>%
+  mutate(item_num = str_match(trial, "([0-9]*)_")[,2]) %>%
+  left_join(items, by = "item_num") %>%
+    mutate(response = response/100, item_prob = item_prob/100) %>%
+  mutate(response = case_when(
+    response == 0 ~ .005, # maybe .001? .0025?
+    response == 1 ~ .995,
+    TRUE ~ response
+  )) %>%
+  select(-trial) %>%
+  spread(trial_type, response) %>%
+  group_by(subj_id) %>%
+  mutate(
+    logit_base = qlogis(baserate),
+    logit_pre = qlogis(pre),
+    logit_truebase = qlogis(item_prob),
+    logit_post = qlogis(post),
+    update = post - pre
+  )
+
+df_reg <- df %>%
+  mutate(
+    item_num = as.numeric(item_num),
+    pos_item = if_else(item_num > 10, 1, 0),
+    good_news = case_when(
+      pos_item==1 & item_prob > baserate ~ 1,
+      pos_item==0 & item_prob < baserate ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+save(df, df_reg, df_all, df_passing, items,
+     file="processed_data.Rdata")
+```
+
+# Data
+
+Columns per item: `_B1` = estimate of the average person's probability ($\tilde b$), `_P1` = own prior ($x$), `_S2` = own posterior after seeing the true base rate. `lotr` is the Life Orientation Test–Revised (trait optimism).
+
+```{r load-data}
+load("processed_data.Rdata")
+
+lotr_scores <- df_passing %>%
+  select(subj_id, lotr_1, lotr_3, lotr_4, lotr_7, lotr_9, lotr_10) %>%
+  mutate(across(-subj_id, ~ recode(.x,
+                                   "Strongly agree" = 4,
+                                   "Somewhat agree" = 3,
+                                   "Neutral" = 2,
+                                   "Somewhat disagree" = 1,
+                                   "Strongly disagree" = 0))) %>%
+  transmute(subj_id,
+            lotr_fixed = lotr_1 + (4 - lotr_3) + lotr_4 + (4 - lotr_7) + (4 - lotr_9) + lotr_10)
+
+d <- df_reg %>%
+  ungroup() %>%
+  left_join(lotr_scores, by = "subj_id") %>%
+  mutate(
+    E = logit_truebase - logit_base,  # log evidence ratio carried by the true base rate
+    g = good_news,
+    valence = if_else(pos_item == 1, "positive event", "negative event"),
+    upd = as.integer(abs(post - pre) > 1e-9),  # changed their estimate at all
+    upd_l = upd == 1,                          # logical copy for brms subset()
+    item = as.character(item_num),
+    subj = factor(subj_id),
+    lotr_z = as.numeric(scale(lotr_fixed)),
+    age_z = as.numeric(scale(age))
+  )
+
+item_labels <- items %>% transmute(item = as.character(as.numeric(item_num)), item_text, item_prob)
+
+c(n_subj = n_distinct(d$subj), n_obs = nrow(d),
+  prop_no_change = mean(d$upd == 0), prop_good_news = mean(d$g))
+```
+
+Good news is largely determined by the item, because perceived base rates are compressed toward 50%. So $\beta$ is partly identified from between-item contrasts unless items get their own parameters.
+
+```{r good-news-by-item}
+d %>%
+  group_by(item) %>%
+  summarize(p_good = mean(g), mean_E = mean(E), p_no_change = mean(upd == 0)) %>%
+  left_join(item_labels, by = "item") %>%
+  select(item, item_text, item_prob, p_good, mean_E, p_no_change) %>%
+  knitr::kable(digits = 2)
+```
+
+# Model ladder
+
+Priors follow the paper: $\alpha \sim N(1, .5)$, $\beta \sim N(0, .5)$. Group-level SDs get half-$N(0, .5)$, a weak constraint that matters mostly for the 20-item SDs.
+
+## M0: rational model
+
+```{r m0}
+m0 <- fit_brm(
+  "m0_rational",
+  post ~ 0 + E + offset(logit_pre),
+  data = d, family = Beta(),
+  prior = set_prior("constant(1)", class = "b", coef = "E")
+)
+```
+
+## M1: person evidence weight $\alpha_i$
+
+```{r m1}
+m1 <- fit_brm(
+  "m1_person_alpha",
+  post ~ 0 + E + offset(logit_pre) + (0 + E | subj),
+  data = d, family = Beta(),
+  prior = set_prior("normal(1, .5)", class = "b", coef = "E") +
+    set_prior("normal(0, .5)", class = "sd")
+)
+```
+
+```{r m1-summary}
+summary(m1)
+```
+
+## M2: person $\alpha_i$ and $\beta_i$, correlated
+
+```{r m2}
+priors_ab <- set_prior("normal(1, .5)", class = "b", coef = "E") +
+  set_prior("normal(0, .5)", class = "b", coef = "E:g") +
+  set_prior("normal(0, .5)", class = "sd")
+
+m2 <- fit_brm(
+  "m2_person_alpha_beta",
+  post ~ 0 + E + E:g + offset(logit_pre) + (0 + E + E:g | subj),
+  data = d, family = Beta(),
+  prior = priors_ab
+)
+```
+
+```{r m2-summary}
+summary(m2)
+```
+
+## M3: crossed person × item
+
+```{r m3}
+m3 <- fit_brm(
+  "m3_crossed",
+  control = list(adapt_delta = .95),
+  post ~ 0 + E + E:g + offset(logit_pre) + (0 + E + E:g | subj) + (0 + E + E:g | item),
+  data = d, family = Beta(),
+  prior = priors_ab
+)
+```
+
+```{r m3-summary}
+summary(m3)
+```
+
+Item-level $\alpha_j$ (updating on bad news) and $\alpha_j + \beta_j$ (good news):
+
+```{r m3-items, fig.width=8, fig.height=6}
+m3_items <- m3 %>%
+  spread_draws(b_E, `b_E:g`, r_item[item, term]) %>%
+  pivot_wider(names_from = term, values_from = r_item) %>%
+  mutate(`bad news` = b_E + E, `good news` = b_E + E + `b_E:g` + `E:g`) %>%
+  pivot_longer(c(`bad news`, `good news`), names_to = "news", values_to = "alpha") %>%
+  mutate(item = as.character(item)) %>%
+  left_join(item_labels, by = "item") %>%
+  left_join(distinct(d, item, valence), by = "item")
+
+m3_items %>%
+  ggplot(aes(y = reorder(item_text, alpha), x = alpha, color = news)) +
+  stat_pointinterval(position = position_dodge(width = .5), .width = .95) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  facet_grid(valence ~ ., scales = "free_y", space = "free_y") +
+  labs(x = "Evidence weight", y = NULL, color = NULL) +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "bottom")
+```
+
+## M3b: latent regression on LOT-R and age
+
+This replaces the paper's two-stage correlation of point estimates (Fig. 4) with person covariates inside the model. Participants with missing age are dropped, so M3b is left out of the LOO comparison.
+
+```{r m3b}
+m3b <- fit_brm(
+  "m3b_latent_regression",
+  control = list(adapt_delta = .95),
+  post ~ 0 + E + E:g + E:lotr_z + E:g:lotr_z + E:age_z + E:g:age_z + offset(logit_pre) +
+    (0 + E + E:g | subj) + (0 + E + E:g | item),
+  data = d, family = Beta(),
+  prior = set_prior("normal(0, .5)", class = "b") +
+    set_prior("normal(1, .5)", class = "b", coef = "E") +
+    set_prior("normal(0, .5)", class = "sd")
+)
+```
+
+```{r m3b-summary}
+fixef(m3b)
+```
+
+## M4: 2PL on the evidence weight
+
+$\alpha_{ij} = a_j + \lambda_j \theta_i$ with $\theta_i \sim N(0, 1)$ and $\lambda_j = \exp(\log\lambda_j) > 0$ (as in Bürkner, 2021, *JSS*). Items with large $\lambda_j$ separate high and low updaters best. The person $\beta_i$ is correlated with $\theta_i$ through the shared `|p|` ID.
+
+```{r m4}
+f_2pl <- bf(
+  post ~ logit_pre + (a + exp(loglam) * theta + bg * g) * E,
+  a ~ 1 + (1 | i | item),
+  loglam ~ 1 + (1 | i | item),
+  theta ~ 0 + (1 | p | subj),
+  bg ~ 1 + (1 | p | subj) + (1 | i | item),
+  nl = TRUE
+)
+
+m4 <- fit_brm(
+  "m4_2pl",
+  control = list(adapt_delta = .95),
+  f_2pl,
+  data = d, family = Beta(),
+  prior = set_prior("normal(1, .5)", class = "b", nlpar = "a") +
+    set_prior("normal(-1.5, 1)", class = "b", nlpar = "loglam") +
+    set_prior("normal(0, .5)", class = "b", nlpar = "bg") +
+    set_prior("constant(1)", class = "sd", group = "subj", nlpar = "theta") +
+    set_prior("normal(0, .5)", class = "sd", nlpar = "a") +
+    set_prior("normal(0, .5)", class = "sd", nlpar = "loglam") +
+    set_prior("normal(0, .5)", class = "sd", nlpar = "bg")
+)
+```
+
+```{r m4-summary}
+summary(m4)
+```
+
+```{r m4-loadings, fig.width=7, fig.height=5}
+m4 %>%
+  spread_draws(b_loglam_Intercept, r_item__loglam[item, ]) %>%
+  mutate(lambda = exp(b_loglam_Intercept + r_item__loglam), item = as.character(item)) %>%
+  left_join(item_labels, by = "item") %>%
+  ggplot(aes(y = reorder(item_text, lambda), x = lambda)) +
+  stat_pointinterval(.width = .95) +
+  labs(x = expression("Item discrimination" ~ lambda[j]), y = NULL) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+## M5: two-part (hurdle) model
+
+Part 1 is a Bernoulli IRT model for whether the participant changed their estimate at all. (A person-level random slope on `g` in this part was not identified and kept the chains from converging, so it is omitted.) Part 2 is the M3 Beta model, fit only to trials where they did. Person effects are correlated across parts (`|p|`), as are item effects (`|i|`).
+
+```{r m5}
+f_update <- bf(upd ~ 1 + g + (1 | p | subj) + (1 | i | item), family = bernoulli())
+f_size <- bf(
+  post | subset(upd_l) ~ 0 + E + E:g + offset(logit_pre) +
+    (0 + E + E:g | p | subj) + (0 + E + E:g | i | item),
+  family = Beta()
+)
+
+m5 <- fit_brm(
+  "m5_hurdle",
+  f_update + f_size + set_rescor(FALSE),
+  data = d,
+  prior = set_prior("normal(0, 1.5)", class = "Intercept", resp = "upd") +
+    set_prior("normal(0, 1)", class = "b", resp = "upd") +
+    set_prior("normal(0, 1)", class = "sd", resp = "upd") +
+    set_prior("normal(1, .5)", class = "b", coef = "E", resp = "post") +
+    set_prior("normal(0, .5)", class = "b", coef = "E:g", resp = "post") +
+    set_prior("normal(0, .5)", class = "sd", resp = "post")
+)
+```
+
+```{r m5-summary}
+summary(m5)
+```
+
+Person-level correlations across the two parts:
+
+```{r m5-cor}
+VarCorr(m5)$subj$cor[, "Estimate", ] %>% round(2)
+```
+
+## M6: free weights on the given and believed base rates
+
+$c_1\,\text{logit}(b) - c_2\,\text{logit}(\tilde b) = c_1 E + (c_1 - c_2)\,\text{logit}(\tilde b)$, so the coefficient on `logit_base` is the asymmetry $c_1 - c_2$. The paper's model fixes it at 0.
+
+```{r m6}
+m6 <- fit_brm(
+  "m6_free_weights",
+  post ~ 0 + E + logit_base + offset(logit_pre) +
+    (0 + E + logit_base | subj) + (0 + E | item),
+  data = d, family = Beta(),
+  prior = set_prior("normal(1, .5)", class = "b", coef = "E") +
+    set_prior("normal(0, .5)", class = "b", coef = "logit_base") +
+    set_prior("normal(0, .5)", class = "sd")
+)
+```
+
+```{r m6-summary}
+fixef(m6)
+```
+
+# Does pessimism survive?
+
+```{r beta-across-models}
+beta_summary <- function(model, par, label) {
+  as_draws_df(model) %>%
+    pull(!!par) %>%
+    mean_qi() %>%
+    transmute(model = label, beta = y, lower = ymin, upper = ymax)
+}
+
+bind_rows(
+  beta_summary(m2, "b_E:g", "M2 person only"),
+  beta_summary(m3, "b_E:g", "M3 + items"),
+  beta_summary(m4, "b_bg_Intercept", "M4 2PL"),
+  beta_summary(m5, "b_post_E:g", "M5 size | changed")
+) %>%
+  knitr::kable(digits = 3)
+```
+
+# Model comparison
+
+LOO on the models fit to the same observations (M3b drops missing ages; M5 has a different likelihood).
+
+```{r loo}
+# add_criterion re-saves each fit to its cache file, so LOO is computed once
+comparable <- list(M0 = m0, M1 = m1, M2 = m2, M3 = m3, M4 = m4, M6 = m6) %>%
+  map(add_criterion, criterion = "loo")
+loo_compare(map(comparable, ~ .x$criteria$loo))
+```
+
+Many observations have Pareto $k > 0.7$, so these PSIS-LOO estimates are unreliable. PSIS-LOO also asks how well a model predicts a held-out *trial* from a participant it has already seen.
+
+## Grouped K-fold CV
+
+Ten folds split by participant, identical for every model. Each held-out participant gets a new random effect drawn from the fitted population distribution (`sample_new_levels = "gaussian"`), and their 20 trials are scored jointly (`joint = "group"`). The ELPD is therefore summed over 186 participants and measures how well each model predicts a new person. M0 is omitted: it has no participant-level parameters, and it trails the other models by about 2000 ELPD in PSIS-LOO.
+
+```{r kfold, eval = params$kfold}
+library(future)
+options(future.globals.maxSize = 4 * 1024^3)
+plan(multisession, workers = 3)  # 3 folds at a time x 4 chains each
+
+set.seed(2022)
+fold_ids <- loo::kfold_split_grouped(K = 10, x = d$subj)
+
+# cached per model; delete kfold_<model>.rds after changing that model
+run_kfold <- function(model, name) {
+  path <- file.path(fit_dir, paste0("kfold_", name, ".rds"))
+  if (file.exists(path)) return(readRDS(path))
+  kf <- kfold(model, folds = fold_ids, group = "subj", joint = "group",
+              sample_new_levels = "gaussian", cores = 4)
+  saveRDS(kf, path)
+  kf
+}
+
+# M0 has no participant parameters (and no grouping factor for joint scoring)
+kfolds <- imap(comparable[names(comparable) != "M0"], run_kfold)
+plan(sequential)
+loo_compare(kfolds)
+```
+
+# Convergence diagnostics
+
+```{r diagnostics}
+list(M0 = m0, M1 = m1, M2 = m2, M3 = m3, M3b = m3b, M4 = m4, M5 = m5, M6 = m6) %>%
+  imap_dfr(~ tibble(
+    model = .y,
+    max_rhat = max(rhat(.x), na.rm = TRUE),
+    min_ess_ratio = min(neff_ratio(.x), na.rm = TRUE),
+    divergent = sum(subset(nuts_params(.x), Parameter == "divergent__")$Value)
+  )) %>%
+  knitr::kable(digits = 3)
+```
+
+# Earlier draft model (superseded)
+
+Kept for reference. It codes good news as `item_prob > pre`, which ignores event valence and the participant's own base-rate estimate (the Sharot et al. coding the paper argues against). It also models the level of the posterior rather than the update, with a Gaussian likelihood on a bounded response.
+
+```{r draft-model, eval=FALSE}
+df_long <- df %>%
+  gather(key = "phase", value = "estimate", baserate, pre, post) %>%
+  filter(phase == "post") %>%
+  mutate(good_news = ifelse(item_prob > pre, 1, 0))
+
+fit_cr_irt <- brm(
+  bf(estimate ~ 1 + (1 | item_num) + (1 | subj_id) + good_news),
+  data = df_long,
+  family = gaussian(),
+  chains = 4,
+  cores = 4
+)
+```
